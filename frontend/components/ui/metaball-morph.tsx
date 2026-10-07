@@ -18,8 +18,8 @@ export interface MetaballMorphProps {
 }
 
 export function MetaballMorph({
-  title = "Vue",
-  description = "Thresholded potential field. Blobs merge like mercury — the cursor is another drop.",
+  title = "WEBFIREWALL",
+  description = "Real-time threat filtering for your web apps. Requests are inspected, attacks are blocked — SQL injection, XSS, bots and DDoS never reach your server.",
   className = "",
 }: MetaballMorphProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -169,10 +169,10 @@ export function MetaballMorph({
     >
       <canvas ref={canvasRef} className="absolute inset-0 block cursor-none" />
       <div className="pointer-events-none relative z-10 flex h-full flex-col items-center justify-center px-4 text-center mix-blend-difference text-white">
-        <h1 className="font-mono text-6xl font-black uppercase leading-none tracking-tighter md:text-9xl">
+        <h1 className="font-mono text-5xl sm:text-6xl font-black uppercase leading-none tracking-tighter whitespace-nowrap md:text-8xl">
           {title}
         </h1>
-        <p className="mt-4 max-w-lg font-mono text-xs opacity-70 md:text-sm">{description}</p>
+        <p className="mt-4 max-w-xl font-mono text-xs opacity-70 md:text-sm leading-relaxed">{description}</p>
       </div>
     </div>
   );
