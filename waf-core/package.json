@@ -1,0 +1,7 @@
+{
+  "name": "waf-core",
+  "version": "1.0.0",
+  "description": "Pure regex-based Web Application Firewall middleware for Express",
+  "main": "index.js",
+  "private": true
+}
