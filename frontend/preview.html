@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Droplet</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+      background-color: #020509;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    .metaball-container {
+      position: relative;
+      height: 100vh;
+      width: 100%;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+      background-color: #020509;
+    }
+    canvas {
+      position: absolute;
+      inset: 0;
+      display: block;
+      cursor: none;
+    }
+    .content-overlay {
+      pointer-events: none;
+      position: relative;
+      z-index: 10;
+      display: flex;
+      height: 100%;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 0 1.5rem;
+      text-align: center;
+      mix-blend-mode: difference;
+      color: #ffffff;
+    }
+    .title {
+      font-family: inherit;
+      font-size: clamp(3rem, 9.5vw, 8rem);
+      font-weight: 900;
+      text-transform: uppercase;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      white-space: nowrap;
+    }
+    .description {
+      margin-top: 1.25rem;
+      max-width: 34rem;
+      font-family: inherit;
+      font-size: clamp(0.75rem, 1.8vw, 0.875rem);
+      line-height: 1.6;
+      opacity: 0.75;
+    }
+    .tagline {
+      margin-top: 0.85rem;
+      font-family: inherit;
+      font-size: clamp(0.72rem, 1.4vw, 0.82rem);
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      opacity: 0.55;
+    }
+    .panel-subtitle {
+      font-size: 0.72rem;
+      color: rgba(255, 255, 255, 0.6);
+      margin-top: -12px;
+      margin-bottom: 18px;
+      text-align: left;
+      line-height: 1.4;
+      letter-spacing: 0.02em;
+    }
+
+    /* 3) TOP-RIGHT BUTTON */
+    .top-button {
+      position: fixed;
+      top: 24px;
+      right: 32px;
+      z-index: 20;
+      font-family: inherit;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      background: transparent;
+      border: 1px solid #C8FF3C;
+      color: #C8FF3C;
+      padding: 10px 20px;
+      cursor: pointer;
+      font-size: 0.82rem;
+      font-weight: 700;
+      border-radius: 4px;
+      outline: none;
+      transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .top-button:hover {
+      background-color: #C8FF3C;
+      color: #020509;
+      box-shadow: 0 0 18px rgba(200, 255, 60, 0.35);
+    }
+
+    /* 4) TRANSPARENT OVERLAY PANEL */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      opacity: 0;
+      pointer-events: none;
+      visibility: hidden;
+      transition: opacity 0.25s ease, visibility 0.25s ease;
+    }
+    .modal-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+      visibility: visible;
+    }
+    .panel-card {
+      width: min(380px, 90vw);
+      background: rgba(10, 14, 20, 0.35);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(200, 255, 60, 0.35);
+      border-radius: 14px;
+      box-shadow: 0 0 40px rgba(200, 255, 60, 0.15);
+      padding: 24px;
+      color: #ffffff;
+      transform: scale(0.96);
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative;
+      box-sizing: border-box;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    .modal-backdrop.open .panel-card {
+      transform: scale(1);
+    }
+    .close-btn {
+      position: absolute;
+      top: 14px;
+      right: 16px;
+      background: transparent;
+      border: none;
+      color: rgba(255, 255, 255, 0.5);
+      font-size: 1.25rem;
+      cursor: pointer;
+      line-height: 1;
+      font-family: inherit;
+      transition: color 0.15s ease;
+    }
+    .close-btn:hover {
+      color: #C8FF3C;
+    }
+
+    /* Login Form Styles */
+    .panel-title {
+      font-size: 1.15rem;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      color: #C8FF3C;
+      text-transform: uppercase;
+      margin-bottom: 20px;
+      text-align: left;
+    }
+    .form-group {
+      margin-bottom: 18px;
+      text-align: left;
+    }
+    .form-label {
+      display: block;
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.6);
+      margin-bottom: 6px;
+    }
+    .form-input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid rgba(200, 255, 60, 0.35);
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 0.9rem;
+      padding: 8px 0;
+      border-radius: 0;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .form-input:focus {
+      outline: none;
+      border-bottom-color: #C8FF3C;
+      box-shadow: 0 1px 0 0 #C8FF3C;
+    }
+    .form-error {
+      color: #ff5252;
+      font-size: 0.74rem;
+      min-height: 18px;
+      margin-bottom: 14px;
+      text-align: left;
+      font-weight: 600;
+    }
+    .submit-btn {
+      width: 100%;
+      background: #C8FF3C;
+      color: #020509;
+      border: none;
+      font-family: inherit;
+      font-size: 0.85rem;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: opacity 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+    }
+    .submit-btn:hover {
+      box-shadow: 0 0 20px rgba(200, 255, 60, 0.4);
+      transform: translateY(-1px);
+    }
+    .submit-btn:active {
+      transform: translateY(0);
+    }
+
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      20%, 60% { transform: translateX(-7px); }
+      40%, 80% { transform: translateX(7px); }
+    }
+    .shake {
+      animation: shake 0.35s ease-in-out;
+    }
+
+    /* Dashboard View Styles */
+    .dashboard-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .status-badge {
+      font-size: 0.68rem;
+      letter-spacing: 0.08em;
+      color: #C8FF3C;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      background-color: #C8FF3C;
+      border-radius: 50%;
+      box-shadow: 0 0 8px #C8FF3C;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .stat-tile {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(200, 255, 60, 0.18);
+      border-radius: 8px;
+      padding: 10px;
+      text-align: left;
+    }
+    .stat-label {
+      font-size: 0.64rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: rgba(255, 255, 255, 0.55);
+      margin-bottom: 4px;
+    }
+    .stat-value {
+      font-size: 1.05rem;
+      font-weight: 800;
+      color: #C8FF3C;
+      font-variant-numeric: tabular-nums;
+    }
+    .log-section {
+      text-align: left;
+      margin-bottom: 18px;
+    }
+    .log-title {
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.7);
+      margin-bottom: 8px;
+    }
+    .log-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-height: 120px;
+    }
+    .log-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.66rem;
+      background: rgba(255, 255, 255, 0.02);
+      border-left: 2px solid #C8FF3C;
+      padding: 5px 8px;
+      border-radius: 2px;
+      font-variant-numeric: tabular-nums;
+    }
+    .log-time {
+      color: rgba(255, 255, 255, 0.45);
+    }
+    .log-ip {
+      color: #ffffff;
+      font-weight: 500;
+    }
+    .log-type {
+      color: #6B4DFF;
+      font-weight: 700;
+    }
+    .log-status {
+      color: #C8FF3C;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+    }
+    .logout-btn {
+      width: 100%;
+      background: transparent;
+      border: 1px solid rgba(200, 255, 60, 0.4);
+      color: #C8FF3C;
+      font-family: inherit;
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+    .logout-btn:hover {
+      background: rgba(200, 255, 60, 0.15);
+      border-color: #C8FF3C;
+    }
+  </style>
+</head>
+<body>
+  <!-- 3) TOP-RIGHT BUTTON -->
+  <button id="authBtn" class="top-button">LOGIN</button>
+
+  <!-- 4) TRANSPARENT OVERLAY PANEL -->
+  <div id="modalBackdrop" class="modal-backdrop">
+    <div id="panelCard" class="panel-card">
+      <button id="closeBtn" class="close-btn" aria-label="Close">&times;</button>
+
+      <!-- LOGIN VIEW -->
+      <div id="loginView">
+        <h2 class="panel-title">DROPLET CONSOLE</h2>
+        <p class="panel-subtitle">Sign in to see your protection live.</p>
+        <form id="loginForm" onsubmit="return false;">
+          <div class="form-group">
+            <label class="form-label" for="username">Username</label>
+            <input class="form-input" id="username" type="text" autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="password">Password</label>
+            <input class="form-input" id="password" type="password" />
+          </div>
+          <div id="loginError" class="form-error"></div>
+          <button type="submit" id="signInBtn" class="submit-btn">SIGN IN</button>
+        </form>
+      </div>
+
+      <!-- DASHBOARD VIEW -->
+      <div id="dashboardView" style="display: none;">
+        <div class="dashboard-header">
+          <h2 class="panel-title" style="margin-bottom: 0;">DROPLET CONSOLE</h2>
+          <div class="status-badge">
+            <span class="status-dot"></span>
+            ACTIVE
+          </div>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-tile">
+            <div class="stat-label">Requests Today</div>
+            <div class="stat-value" id="statRequests">148,290</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-label">Threats Blocked</div>
+            <div class="stat-value" id="statThreats">1,429</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-label">Active Rules</div>
+            <div class="stat-value" id="statRules">42</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-label">Blocked IPs</div>
+            <div class="stat-value" id="statIps">384</div>
+          </div>
+        </div>
+
+        <div class="log-section">
+          <div class="log-title">LIVE ATTACK LOG</div>
+          <div class="log-list" id="attackLogList">
+            <!-- Initial attack events -->
+          </div>
+        </div>
+
+        <button id="logoutBtn" class="logout-btn">LOGOUT</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1) METABALL CANVAS & CONTENT OVERLAY -->
+  <div class="metaball-container" id="container">
+    <canvas id="canvas"></canvas>
+    <div class="content-overlay">
+      <h1 class="title">DROPLET</h1>
+      <p class="description">Block attacks before they reach your site. Log in to see what Droplet stopped.</p>
+      <p class="tagline">inspect &middot; filter &middot; block</p>
+    </div>
+  </div>
+
+  <!-- CANVAS ANIMATION SCRIPT (UNTOUCHED AND UNCHANGED) -->
+  <script>
+    const canvas = document.getElementById("canvas");
+    const container = document.getElementById("container");
+    const ctx = canvas.getContext("2d", { alpha: false });
+
+    let raf = 0;
+    let width = 0;
+    let height = 0;
+    let time = 0;
+    const mouse = { x: 0, y: 0, tx: 0, ty: 0 };
+    let blobs = [];
+
+    const step = 5;
+
+    const spawn = () => {
+      blobs = [];
+      for (let i = 0; i < 7; i++) {
+        blobs.push({
+          x: width * (0.2 + Math.random() * 0.6),
+          y: height * (0.2 + Math.random() * 0.6),
+          vx: (Math.random() - 0.5) * 0.8,
+          vy: (Math.random() - 0.5) * 0.8,
+          r: 55 + Math.random() * 50,
+          phase: Math.random() * Math.PI * 2,
+        });
+      }
+    };
+
+    const resize = () => {
+      const rect = container.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      width = rect.width;
+      height = rect.height;
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      mouse.tx = width * 0.5;
+      mouse.ty = height * 0.5;
+      spawn();
+    };
+
+    const onMove = (e) => {
+      const rect = container.getBoundingClientRect();
+      mouse.tx = e.clientX - rect.left;
+      mouse.ty = e.clientY - rect.top;
+    };
+
+    resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(container);
+    container.addEventListener("pointermove", onMove);
+
+    let lastTime = performance.now();
+
+    const tick = (now) => {
+      const dt = Math.min((now - lastTime) / 1000, 0.1);
+      lastTime = now;
+      time += dt;
+
+      // Smooth interpolation for mouse position
+      mouse.x += (mouse.tx - mouse.x) * 0.15;
+      mouse.y += (mouse.ty - mouse.y) * 0.15;
+
+      ctx.fillStyle = "#05080a";
+      ctx.fillRect(0, 0, width, height);
+
+      for (let i = 0; i < blobs.length; i++) {
+        const b = blobs[i];
+        b.phase += dt * 0.6;
+        b.x += b.vx + Math.sin(time * 0.4 + b.phase) * 0.25;
+        b.y += b.vy + Math.cos(time * 0.35 + b.phase) * 0.25;
+        if (b.x < b.r || b.x > width - b.r) b.vx *= -1;
+        if (b.y < b.r || b.y > height - b.r) b.vy *= -1;
+      }
+
+      const fieldCount = blobs.length + 1;
+      const fieldX = new Float32Array(fieldCount);
+      const fieldY = new Float32Array(fieldCount);
+      const fieldR2 = new Float32Array(fieldCount);
+
+      for (let i = 0; i < blobs.length; i++) {
+        const b = blobs[i];
+        const r = b.r * (1 + Math.sin(b.phase) * 0.08);
+        fieldX[i] = b.x;
+        fieldY[i] = b.y;
+        fieldR2[i] = r * r;
+      }
+      fieldX[blobs.length] = mouse.x;
+      fieldY[blobs.length] = mouse.y;
+      fieldR2[blobs.length] = 78 * 78;
+
+      ctx.fillStyle = "#c8ff3a";
+      ctx.beginPath();
+
+      const cols = Math.ceil(width / step);
+      const rows = Math.ceil(height / step);
+      const thresh = 1.05;
+
+      for (let j = 0; j < rows; j++) {
+        const y = j * step;
+        for (let i = 0; i < cols; i++) {
+          const x = i * step;
+          let v = 0;
+
+          for (let k = 0; k < fieldCount; k++) {
+            const dx = x - fieldX[k];
+            const dy = y - fieldY[k];
+            v += fieldR2[k] / (dx * dx + dy * dy + 1);
+          }
+
+          if (v > thresh) {
+            ctx.rect(x, y, step + 0.4, step + 0.4);
+          }
+        }
+      }
+      ctx.fill();
+
+      raf = requestAnimationFrame(tick);
+    };
+
+    raf = requestAnimationFrame(tick);
+  </script>
+
+  <!-- OVERLAY PANEL & INTERACTION SCRIPT -->
+  <script>
+    (function() {
+      const authBtn = document.getElementById("authBtn");
+      const modalBackdrop = document.getElementById("modalBackdrop");
+      const panelCard = document.getElementById("panelCard");
+      const closeBtn = document.getElementById("closeBtn");
+      const loginView = document.getElementById("loginView");
+      const dashboardView = document.getElementById("dashboardView");
+      const loginForm = document.getElementById("loginForm");
+      const usernameInput = document.getElementById("username");
+      const passwordInput = document.getElementById("password");
+      const loginError = document.getElementById("loginError");
+      const logoutBtn = document.getElementById("logoutBtn");
+
+      const statRequests = document.getElementById("statRequests");
+      const statThreats = document.getElementById("statThreats");
+      const statRules = document.getElementById("statRules");
+      const statIps = document.getElementById("statIps");
+      const attackLogList = document.getElementById("attackLogList");
+
+      let isLoggedIn = false;
+      let statsTimer = null;
+      let logTimer = null;
+
+      let reqCount = 148290;
+      let threatCount = 1429;
+      let ruleCount = 42;
+      let ipCount = 384;
+
+      const sampleIps = [
+        "194.26.29.11",
+        "45.142.122.9",
+        "185.220.101.5",
+        "89.248.163.78",
+        "103.152.18.4",
+        "178.128.82.14",
+        "198.51.100.27"
+      ];
+      const attackTypes = ["SQLi", "XSS", "Bot", "DDoS"];
+
+      function formatTime(d) {
+        return d.toTimeString().split(" ")[0];
+      }
+
+      function initialLogs() {
+        const now = Date.now();
+        const logs = [
+          { time: formatTime(new Date(now - 14000)), ip: "194.26.29.11", type: "SQLi" },
+          { time: formatTime(new Date(now - 11000)), ip: "45.142.122.9", type: "XSS" },
+          { time: formatTime(new Date(now - 8000)), ip: "185.220.101.5", type: "Bot" },
+          { time: formatTime(new Date(now - 5000)), ip: "89.248.163.78", type: "DDoS" },
+          { time: formatTime(new Date(now - 2000)), ip: "103.152.18.4", type: "SQLi" }
+        ];
+        attackLogList.innerHTML = "";
+        logs.forEach(addLogRow);
+      }
+
+      function addLogRow(data) {
+        const row = document.createElement("div");
+        row.className = "log-row";
+        row.innerHTML = `
+          <span class="log-time">${data.time}</span>
+          <span class="log-ip">${data.ip}</span>
+          <span class="log-type">${data.type}</span>
+          <span class="log-status">BLOCKED</span>
+        `;
+        attackLogList.prepend(row);
+        while (attackLogList.children.length > 5) {
+          attackLogList.removeChild(attackLogList.lastChild);
+        }
+      }
+
+      function startDashboardSimulation() {
+        if (statsTimer) clearInterval(statsTimer);
+        if (logTimer) clearInterval(logTimer);
+
+        // Tick stats every 2s
+        statsTimer = setInterval(() => {
+          reqCount += Math.floor(Math.random() * 12) + 1;
+          if (Math.random() > 0.4) threatCount += 1;
+          if (Math.random() > 0.7) ipCount += 1;
+
+          statRequests.textContent = reqCount.toLocaleString();
+          statThreats.textContent = threatCount.toLocaleString();
+          statIps.textContent = ipCount.toLocaleString();
+        }, 2000);
+
+        // New attack log row every 3s
+        logTimer = setInterval(() => {
+          const randIp = sampleIps[Math.floor(Math.random() * sampleIps.length)];
+          const randType = attackTypes[Math.floor(Math.random() * attackTypes.length)];
+          addLogRow({
+            time: formatTime(new Date()),
+            ip: randIp,
+            type: randType
+          });
+        }, 3000);
+      }
+
+      function stopDashboardSimulation() {
+        if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+        if (logTimer) { clearInterval(logTimer); logTimer = null; }
+      }
+
+      function openPanel() {
+        modalBackdrop.classList.add("open");
+        if (isLoggedIn) {
+          loginView.style.display = "none";
+          dashboardView.style.display = "block";
+          startDashboardSimulation();
+        } else {
+          loginView.style.display = "block";
+          dashboardView.style.display = "none";
+          loginError.textContent = "";
+          setTimeout(() => usernameInput.focus(), 50);
+        }
+      }
+
+      function closePanel() {
+        modalBackdrop.classList.remove("open");
+      }
+
+      function togglePanel() {
+        if (modalBackdrop.classList.contains("open")) {
+          closePanel();
+        } else {
+          openPanel();
+        }
+      }
+
+      authBtn.addEventListener("click", togglePanel);
+      closeBtn.addEventListener("click", closePanel);
+
+      // Close on backdrop click outside the panel card
+      modalBackdrop.addEventListener("click", (e) => {
+        if (e.target === modalBackdrop) {
+          closePanel();
+        }
+      });
+
+      // Close on Esc key
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && modalBackdrop.classList.contains("open")) {
+          closePanel();
+        }
+      });
+
+      // Login handler
+      loginForm.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const user = usernameInput.value.trim();
+        const pass = passwordInput.value.trim();
+
+        if (!user || !pass) {
+          loginError.textContent = "Please enter username and password.";
+          return;
+        }
+
+        if (user === "admin" && pass === "admin123") {
+          loginError.textContent = "";
+          isLoggedIn = true;
+          authBtn.textContent = "DASHBOARD";
+          loginView.style.display = "none";
+          dashboardView.style.display = "block";
+          initialLogs();
+          startDashboardSimulation();
+        } else {
+          loginError.textContent = "Invalid credentials";
+          panelCard.classList.remove("shake");
+          void panelCard.offsetWidth; // retrigger reflow
+          panelCard.classList.add("shake");
+          setTimeout(() => panelCard.classList.remove("shake"), 400);
+        }
+      });
+
+      // Logout handler
+      logoutBtn.addEventListener("click", () => {
+        isLoggedIn = false;
+        authBtn.textContent = "LOGIN";
+        stopDashboardSimulation();
+        usernameInput.value = "";
+        passwordInput.value = "";
+        loginError.textContent = "";
+        dashboardView.style.display = "none";
+        loginView.style.display = "block";
+        closePanel();
+      });
+
+      // Pre-seed attack logs
+      initialLogs();
+    })();
+  </script>
+</body>
+</html>

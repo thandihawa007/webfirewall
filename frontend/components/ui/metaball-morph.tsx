@@ -14,12 +14,14 @@ interface Blob {
 export interface MetaballMorphProps {
   title?: string;
   description?: string;
+  tagline?: string;
   className?: string;
 }
 
 export function MetaballMorph({
-  title = "WEBFIREWALL",
-  description = "Real-time threat filtering for your web apps. Requests are inspected, attacks are blocked — SQL injection, XSS, bots and DDoS never reach your server.",
+  title = "DROPLET",
+  description = "Block attacks before they reach your site. Log in to see what Droplet stopped.",
+  tagline = "inspect · filter · block",
   className = "",
 }: MetaballMorphProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -173,6 +175,7 @@ export function MetaballMorph({
           {title}
         </h1>
         <p className="mt-4 max-w-xl font-mono text-xs opacity-70 md:text-sm leading-relaxed">{description}</p>
+        <p className="mt-3 font-mono text-xs opacity-50 uppercase tracking-widest">{tagline}</p>
       </div>
     </div>
   );
