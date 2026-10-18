@@ -97,21 +97,43 @@ if (!counterRow) {
 
 // 2. Seed Default Admin
 function seedAdmin() {
-  const existingAdmin = db.prepare('SELECT id, role, active, email FROM users WHERE username = ?').get('admin');
+  const adminUsername = process.env.ADMIN_USERNAME || 'admin';
+  const existingAdmin = db.prepare('SELECT id, role, active, email FROM users WHERE username = ? COLLATE NOCASE').get(adminUsername);
   if (!existingAdmin) {
-    let password = process.env.ADMIN_PASSWORD || 'admin123';
+    let password = process.env.ADMIN_PASSWORD;
+    let isGenerated = false;
+
+    if (!password) {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+      const bytes = crypto.randomBytes(16);
+      password = '';
+      for (let i = 0; i < 16; i++) {
+        password += chars[bytes[i] % chars.length];
+      }
+      isGenerated = true;
+    }
+
     const saltRounds = 12;
     const passwordHash = bcrypt.hashSync(password, saltRounds);
 
     db.prepare(`
       INSERT INTO users (username, email, password_hash, role, active)
       VALUES (?, ?, ?, ?, ?)
-    `).run('admin', 'admin@droplet.local', passwordHash, 'admin', 1);
+    `).run(adminUsername, `${adminUsername}@droplet.local`, passwordHash, 'admin', 1);
 
-    console.log('[Database] Seeded initial admin user (username: "admin").');
+    if (isGenerated) {
+      console.log('\n========================================================');
+      console.log(' 🔑 [Droplet] Initial Admin Account Created');
+      console.log(`    Username: ${adminUsername}`);
+      console.log(`    Generated Password: ${password}`);
+      console.log('    (Save this password! It will not be shown again.)');
+      console.log('========================================================\n');
+    } else {
+      console.log(`[Database] Seeded initial admin user (username: "${adminUsername}").`);
+    }
   } else {
     // Ensure admin user has role admin and active 1
-    db.prepare("UPDATE users SET role = 'admin', active = 1 WHERE username = 'admin'").run();
+    db.prepare("UPDATE users SET role = 'admin', active = 1 WHERE id = ?").run(existingAdmin.id);
   }
 }
 seedAdmin();
@@ -362,29 +384,59 @@ function getTimeseriesStats(user_id, isAdmin = false, site_id = null) {
   return { labels, data };
 }
 
-function getAttackTypesStats(user_id, isAdmin = false, site_id = null) {
+function getAttackTypesStats(user_id, isAdmin = false, site_id = null, range = null) {
   const scope = buildScopeFilter(user_id, isAdmin, site_id);
+  let timeClause = '';
+  const extraParams = [];
+
+  if (range) {
+    let cutoffDate = null;
+    const now = Date.now();
+    if (range === '24h' || range === '1d') {
+      cutoffDate = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+    } else if (range === '7d') {
+      cutoffDate = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+    } else if (range === '30d') {
+      cutoffDate = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+    } else {
+      const parsed = new Date(range);
+      if (!isNaN(parsed.getTime())) {
+        cutoffDate = parsed.toISOString();
+      }
+    }
+
+    if (cutoffDate) {
+      timeClause = scope.whereSql ? ' AND time >= ?' : 'WHERE time >= ?';
+      extraParams.push(cutoffDate);
+    }
+  }
+
+  const whereSql = (scope.whereSql || '') + timeClause;
+  const params = [...scope.params, ...extraParams];
+
   const rows = db.prepare(`
     SELECT type, COUNT(*) as count
     FROM attack_logs
-    ${scope.whereSql}
+    ${whereSql}
     GROUP BY type
     ORDER BY count DESC
-  `).all(...scope.params);
+  `).all(...params);
 
-  const defaultTypes = ['SQLi', 'XSS', 'PathTraversal', 'Bot', 'DDoS'];
-  const labels = [];
-  const data = [];
-
+  const defaultTypes = ['SQLi', 'XSS', 'PathTraversal', 'Bot', 'DDoS', 'Oversized Body'];
   const countsMap = new Map();
   rows.forEach(r => countsMap.set(r.type, r.count));
 
-  defaultTypes.forEach(t => {
+  const activeTypes = rows.map(r => r.type);
+  const combinedTypes = Array.from(new Set([...activeTypes, ...defaultTypes]));
+  const labels = [];
+  const data = [];
+
+  combinedTypes.forEach(t => {
     labels.push(t);
     data.push(countsMap.get(t) || 0);
   });
 
-  return { labels, data };
+  return { labels, data, counts: Object.fromEntries(countsMap) };
 }
 
 function getTopIpsStats(user_id, isAdmin = false, site_id = null) {
