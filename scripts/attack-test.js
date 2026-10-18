@@ -134,7 +134,7 @@ async function runAudit() {
   console.log(`Status: ${resTraversal.status} -> ${traversalBlocked ? 'BLOCKED (Pass)' : 'MISSED (Fail)'}`);
 
   // 5. Malicious Scanner User-Agent (Bot Detection)
-  process.stdout.write('[5/6] Testing Malicious Scanner Bot User-Agent (sqlmap)... ');
+  process.stdout.write('[5/10] Testing Malicious Scanner Bot User-Agent (sqlmap)... ');
   const resBot = await sendRequest(`${base}/api/data`, {
     userAgent: 'sqlmap/1.5.2#stable (http://sqlmap.org)'
   });
@@ -149,8 +149,71 @@ async function runAudit() {
   });
   console.log(`Status: ${resBot.status} -> ${botBlocked ? 'BLOCKED (Pass)' : 'MISSED (Fail)'}`);
 
-  // 6. Request Flood / DDoS (> 100 req/min per IP threshold)
-  process.stdout.write('[6/6] Testing Rapid Flood (sending 105 requests for DDoS threshold)... ');
+  // 6. SQLi Comment Obfuscation (Evasion)
+  process.stdout.write('[6/10] Testing Obfuscated SQLi (UN/**/ION SEL/**/ECT)... ');
+  const sqliObfUrl = `${base}/items?category=` + encodeURIComponent('1 UN/**/ION SEL/**/ECT 1,2,3--');
+  const resSqliObf = await sendRequest(sqliObfUrl);
+  const sqliObfBlocked = resSqliObf.status === 403;
+  results.push({
+    test: 'SQLi Comment Obfuscation',
+    payload: '1 UN/**/ION SEL/**/ECT 1,2,3--',
+    status: resSqliObf.status,
+    blocked: sqliObfBlocked,
+    expected: 'BLOCKED (403)',
+    pass: sqliObfBlocked
+  });
+  console.log(`Status: ${resSqliObf.status} -> ${sqliObfBlocked ? 'BLOCKED (Pass)' : 'MISSED (Fail)'}`);
+
+  // 7. XSS SVG Onload (Evasion)
+  process.stdout.write('[7/10] Testing SVG Event Handler XSS (<svg onload=alert(1)>)... ');
+  const xssSvgUrl = `${base}/profile?name=` + encodeURIComponent('<svg onload=alert(1)>');
+  const resXssSvg = await sendRequest(xssSvgUrl);
+  const xssSvgBlocked = resXssSvg.status === 403;
+  results.push({
+    test: 'XSS SVG Onload',
+    payload: '<svg onload=alert(1)>',
+    status: resXssSvg.status,
+    blocked: xssSvgBlocked,
+    expected: 'BLOCKED (403)',
+    pass: xssSvgBlocked
+  });
+  console.log(`Status: ${resXssSvg.status} -> ${xssSvgBlocked ? 'BLOCKED (Pass)' : 'MISSED (Fail)'}`);
+
+  // 8. Double-Encoded Path Traversal (Evasion)
+  process.stdout.write('[8/10] Testing Double-Encoded Traversal (%252e%252e%252f)... ');
+  const resDoubleTrav = await sendRequest(`${base}/download?file=%252e%252e%252f%252e%252e%252fetc%252fpasswd`);
+  const doubleTravBlocked = resDoubleTrav.status === 403;
+  results.push({
+    test: 'Double-Encoded Traversal',
+    payload: '%252e%252e%252f%252e%252e%252fetc%252fpasswd',
+    status: resDoubleTrav.status,
+    blocked: doubleTravBlocked,
+    expected: 'BLOCKED (403)',
+    pass: doubleTravBlocked
+  });
+  console.log(`Status: ${resDoubleTrav.status} -> ${doubleTravBlocked ? 'BLOCKED (Pass)' : 'MISSED (Fail)'}`);
+
+  // 9. Oversized Body (>10KB limit)
+  process.stdout.write('[9/10] Testing Oversized Body (>10KB)... ');
+  const oversizedPayload = { data: 'A'.repeat(12 * 1024) }; // 12KB
+  const resOversized = await sendRequest(`${base}/api/upload`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: oversizedPayload
+  });
+  const oversizedBlocked = resOversized.status === 403;
+  results.push({
+    test: 'Oversized Body (>10KB)',
+    payload: '12KB JSON payload',
+    status: resOversized.status,
+    blocked: oversizedBlocked,
+    expected: 'BLOCKED (403)',
+    pass: oversizedBlocked
+  });
+  console.log(`Status: ${resOversized.status} -> ${oversizedBlocked ? 'BLOCKED (Pass)' : 'MISSED (Fail)'}`);
+
+  // 10. Request Flood / DDoS (> 100 req/min per IP threshold)
+  process.stdout.write('[10/10] Testing Rapid Flood (sending 105 requests for DDoS threshold)... ');
   let ddosBlocked = false;
   let finalStatus = 200;
 
