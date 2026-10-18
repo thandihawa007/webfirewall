@@ -38,13 +38,36 @@ const { validateTargetUrl } = require('./lib/ssrf');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'f3b207a998b64e0dd07b1d9bf1229a44ccf69ee7353f2c5e584f107f9c2122b1';
 const IS_PROD = process.env.NODE_ENV === 'production';
 
-// Support reverse-proxy deployments (Render / Railway / Docker)
-if (process.env.TRUST_PROXY || IS_PROD) {
-  app.set('trust proxy', 1);
+// JWT Secret validation: required and must be at least 32 characters long
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+  console.error('[Fatal Error] JWT_SECRET environment variable is required and must be at least 32 characters long.');
+  process.exit(1);
 }
+
+// Trust proxy so req.ip reflects real client IP behind reverse proxies (Render / Railway / Docker)
+app.set('trust proxy', 1);
+
+// Standard Cookie configurations
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  sameSite: 'lax',
+  secure: IS_PROD,
+  maxAge: 8 * 60 * 60 * 1000
+};
+
+const CLEAR_COOKIE_OPTIONS = {
+  httpOnly: true,
+  sameSite: 'lax',
+  secure: IS_PROD
+};
+
+// Health check endpoint for Render / Railway / orchestrators
+app.get('/healthz', (req, res) => {
+  return res.json({ ok: true });
+});
 
 // -----------------------------------------------------------------------------
 // 1. Core Security & Middleware
@@ -63,86 +86,18 @@ app.use(cors({
 
 app.use(cookieParser());
 
-// Body Parsers with 10kb limit
-app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+// Body Parsers (support up to 10mb for WAF inspection & monitor mode; size limits enforced by Droplet WAF)
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // -----------------------------------------------------------------------------
-// 2. WAF Detection Engine (SQLi, XSS, Path Traversal, Bot, DDoS)
+// 2. WAF Detection Engine (SQLi, XSS, Path Traversal, Bot, DDoS, Oversized Body)
 // -----------------------------------------------------------------------------
 
-const WAF_RULES = [
-  // SQL Injection
-  {
-    category: 'SQLi',
-    pattern: /(?:'|%27|")?\s*\b(?:or|and)\b\s+(?:'[^']*'?|"[^"]*"?|\d+)\s*=\s*(?:'[^']*'?|"[^"]*"?|\d+)/i,
-    label: 'OR/AND Boolean Auth Bypass'
-  },
-  {
-    category: 'SQLi',
-    pattern: /(?:'|%27|")(?:[\s\S]*?)(?:--|#|\/\*)/i,
-    label: 'Quote and Comment Injection'
-  },
-  {
-    category: 'SQLi',
-    pattern: /\bunion\s+(?:all\s+)?select\b/i,
-    label: 'UNION Select Injection'
-  },
-  {
-    category: 'SQLi',
-    pattern: /;\s*(?:select|insert|update|delete|drop|truncate|alter|create|exec|execute)\b/i,
-    label: 'Stacked Query Injection'
-  },
-  {
-    category: 'SQLi',
-    pattern: /\b(?:exec|execute)\s*\(|benchmark\s*\(|sleep\s*\(\d+\)/i,
-    label: 'Time-Based / Execution Injection'
-  },
+const WAF_RULES = require('./lib/rules');
+const { scanValue } = require('./lib/normalize');
 
-  // Cross-Site Scripting (XSS)
-  {
-    category: 'XSS',
-    pattern: /<script\b[^>]*>(?:[\s\S]*?<\/script>)?/i,
-    label: 'Script Tag Injection'
-  },
-  {
-    category: 'XSS',
-    pattern: /(?:javascript|vbscript|data)\s*:[^\s"']*/i,
-    label: 'Script Pseudo-Protocol URI'
-  },
-  {
-    category: 'XSS',
-    pattern: /\bon(?:error|load|click|mouseover|focus|blur|submit|change|keydown|keyup)\s*=/i,
-    label: 'Inline Event Handler Injection'
-  },
-  {
-    category: 'XSS',
-    pattern: /<iframe\b[^>]*>(?:[\s\S]*?<\/iframe>)?/i,
-    label: 'Iframe Injection'
-  },
-
-  // Path Traversal
-  {
-    category: 'PathTraversal',
-    pattern: /(?:\.\.[\/\\])/,
-    label: 'Directory Traversal Sequence (../)'
-  },
-  {
-    category: 'PathTraversal',
-    pattern: /(?:%2e|\.){2}(?:%2f|%5c|\/|\\)/i,
-    label: 'URL-Encoded Traversal Sequence'
-  },
-  {
-    category: 'PathTraversal',
-    pattern: /(?:\/etc\/(?:passwd|shadow|hosts|group)|\/proc\/self\/|\b(?:windows|winnt)[\/\\]system32|\/win\.ini|\/boot\.ini)/i,
-    label: 'Sensitive System Target'
-  }
-];
-
-// Known Malicious Scanner / Bot User Agents
-const KNOWN_BOT_USER_AGENTS = /(?:sqlmap|nikto|dirbuster|nmap|masscan|wpscan|gobuster|hydra|acunetix|havij|zaproxy|arachni|netsparker|censys|shodan|badbot|morfeus|paros|webscarab)/i;
-
-const ACTIVE_RULES_COUNT = WAF_RULES.length + 2; // +1 Bot rule +1 DDoS rule
+const ACTIVE_RULES_COUNT = WAF_RULES.length + 2; // Rules + DDoS limiter + Oversized Body policy
 
 // DDoS Tracker: sliding 60-second window per site+IP
 const ipRateLimitWindow = new Map();
@@ -160,50 +115,24 @@ function checkDDoS(siteKey, ip) {
 }
 
 function getCleanIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  const rawIp = forwarded ? forwarded.split(',')[0].trim() : (req.socket?.remoteAddress || req.ip || '127.0.0.1');
-  return String(rawIp).replace(/^::ffff:/, '');
+  const rawIp = req.ip || req.socket?.remoteAddress || '127.0.0.1';
+  return String(rawIp).replace(/^::ffff:/, '').trim();
 }
 
-function scanValue(val, rules, visited = new WeakSet()) {
-  if (val === null || val === undefined) return null;
-
-  if (typeof val === 'string') {
-    for (const rule of rules) {
-      if (rule.pattern.test(val)) return rule;
-    }
-    try {
-      const decoded = decodeURIComponent(val);
-      if (decoded !== val) {
-        for (const rule of rules) {
-          if (rule.pattern.test(decoded)) return rule;
-        }
-      }
-    } catch (_) {}
-    return null;
+function getBodySize(req) {
+  const headerLen = req.headers['content-length'];
+  if (headerLen) {
+    const parsed = parseInt(headerLen, 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
   }
-
-  if (typeof val === 'object') {
-    if (visited.has(val)) return null;
-    visited.add(val);
-
-    if (Array.isArray(val)) {
-      for (const item of val) {
-        const match = scanValue(item, rules, visited);
-        if (match) return match;
-      }
-      return null;
-    }
-
-    for (const key of Object.keys(val)) {
-      const keyMatch = scanValue(key, rules, visited);
-      if (keyMatch) return keyMatch;
-      const valMatch = scanValue(val[key], rules, visited);
-      if (valMatch) return valMatch;
+  if (req.body) {
+    if (Buffer.isBuffer(req.body)) return req.body.length;
+    if (typeof req.body === 'string') return Buffer.byteLength(req.body);
+    if (typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+      return Buffer.byteLength(JSON.stringify(req.body));
     }
   }
-
-  return null;
+  return 0;
 }
 
 function escapeHtml(str) {
@@ -275,31 +204,78 @@ app.all(['/p/:siteId', '/p/:siteId/*'], async (req, res, next) => {
     `);
   }
 
-  // 3. Inspect for Bot User-Agent
-  let violation = null;
-  if (KNOWN_BOT_USER_AGENTS.test(userAgent)) {
-    violation = { category: 'Bot', label: 'Known Malicious Scanner User-Agent' };
+  // 3. Body Size Enforcement (Max 10KB = 10,240 bytes)
+  const bodySize = getBodySize(req);
+  if (bodySize > 10 * 1024) {
+    if (isBlockMode) {
+      recordAttackLog({
+        site_id: site.id,
+        user_id: site.user_id,
+        ip: clientIp,
+        type: 'Oversized Body',
+        path: reqPath,
+        method: req.method,
+        user_agent: userAgent,
+        status: 'BLOCKED'
+      });
+
+      return res.status(403).send(`
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="UTF-8"><title>Blocked by Droplet</title></head>
+        <body style="background:#020509;color:#ffffff;font-family:ui-monospace,monospace;display:flex;height:100vh;align-items:center;justify-content:center;margin:0;padding:20px;box-sizing:border-box;">
+          <div style="background:rgba(10,14,20,0.85);border:1px solid #C8FF3C;border-radius:14px;padding:36px;max-width:460px;width:100%;text-align:center;box-shadow:0 0 40px rgba(200,255,60,0.2);">
+            <div style="font-size:2.2rem;margin-bottom:12px;">🛡️</div>
+            <h1 style="color:#C8FF3C;margin:0 0 10px;font-size:1.6rem;letter-spacing:0.06em;text-transform:uppercase;">BLOCKED BY DROPLET</h1>
+            <p style="opacity:0.8;font-size:0.88rem;line-height:1.6;margin:0 0 20px;">Request payload exceeds the maximum allowed body size of 10KB.</p>
+            <div style="margin:20px 0;padding:12px;background:rgba(200,255,60,0.08);color:#C8FF3C;font-size:0.82rem;border-radius:6px;font-weight:700;border:1px solid rgba(200,255,60,0.25);">
+              Threat Category: Oversized Body (Payload > 10KB)
+            </div>
+            <p style="opacity:0.5;font-size:0.75rem;margin:20px 0 0;">Droplet Protected Reverse Proxy &bull; Real-time Threat Shield</p>
+          </div>
+        </body>
+        </html>
+      `);
+    } else {
+      recordAttackLog({
+        site_id: site.id,
+        user_id: site.user_id,
+        ip: clientIp,
+        type: 'Oversized Body',
+        path: reqPath,
+        method: req.method,
+        user_agent: userAgent,
+        status: 'MONITORED'
+      });
+    }
   }
 
-  // 4. Inspect payload (URL, Query, Body, Headers) with WAF rules
+  // 4. Inspect for Bot User-Agent
+  let violation = null;
+  const botRule = WAF_RULES.find(r => r.type === 'Bot');
+  if (botRule && botRule.regex.test(userAgent)) {
+    violation = botRule;
+  }
+
+  // 5. Inspect payload (URL, Query, Body, Headers) with WAF rules & evasion handling
   if (!violation) {
-    violation = scanValue(reqPath, WAF_RULES);
+    violation = scanValue(reqPath, WAF_RULES, false);
   }
   if (!violation && req.query) {
-    violation = scanValue(req.query, WAF_RULES);
+    violation = scanValue(req.query, WAF_RULES, true);
   }
   if (!violation && req.body) {
-    violation = scanValue(req.body, WAF_RULES);
+    violation = scanValue(req.body, WAF_RULES, false);
   }
 
-  // 5. Action upon inspection result
+  // 6. Action upon inspection result
   if (violation) {
     if (isBlockMode) {
       recordAttackLog({
         site_id: site.id,
         user_id: site.user_id,
         ip: clientIp,
-        type: violation.category,
+        type: violation.type,
         path: reqPath,
         method: req.method,
         user_agent: userAgent,
@@ -319,7 +295,7 @@ app.all(['/p/:siteId', '/p/:siteId/*'], async (req, res, next) => {
             <h1 style="color:#C8FF3C;margin:0 0 10px;font-size:1.6rem;letter-spacing:0.06em;text-transform:uppercase;">BLOCKED BY DROPLET</h1>
             <p style="opacity:0.8;font-size:0.88rem;line-height:1.6;margin:0 0 20px;">This request was inspected by Droplet and blocked before reaching the origin server.</p>
             <div style="margin:20px 0;padding:12px;background:rgba(200,255,60,0.08);color:#C8FF3C;font-size:0.82rem;border-radius:6px;font-weight:700;border:1px solid rgba(200,255,60,0.25);">
-              Threat Category: ${escapeHtml(violation.category)} (${escapeHtml(violation.label)})
+              Threat Category: ${escapeHtml(violation.type)} (${escapeHtml(violation.name)})
             </div>
             <p style="opacity:0.5;font-size:0.75rem;margin:20px 0 0;">Droplet Protected Reverse Proxy &bull; Real-time Threat Shield</p>
           </div>
@@ -332,7 +308,7 @@ app.all(['/p/:siteId', '/p/:siteId/*'], async (req, res, next) => {
         site_id: site.id,
         user_id: site.user_id,
         ip: clientIp,
-        type: violation.category,
+        type: violation.type,
         path: reqPath,
         method: req.method,
         user_agent: userAgent,
@@ -344,7 +320,7 @@ app.all(['/p/:siteId', '/p/:siteId/*'], async (req, res, next) => {
     recordSiteRequest(site.id, site.user_id, 'ALLOWED');
   }
 
-  // 6. Forward clean / monitored request to target_url
+  // 7. Forward clean / monitored request to target_url
   const prefixRegex = new RegExp(`^/p/${site.id}`);
   const proxy = createProxyMiddleware({
     target: site.target_url,
@@ -356,6 +332,12 @@ app.all(['/p/:siteId', '/p/:siteId/*'], async (req, res, next) => {
     },
     on: {
       proxyReq: (proxyReq, reqObj) => {
+        // Forward client identification headers to destination
+        proxyReq.setHeader('X-Forwarded-For', clientIp);
+        proxyReq.setHeader('X-Forwarded-Host', reqObj.get('host') || '');
+        proxyReq.setHeader('X-Forwarded-Proto', reqObj.protocol);
+        proxyReq.setHeader('X-Real-IP', clientIp);
+
         // Re-stream parsed body if present
         if (reqObj.body && Object.keys(reqObj.body).length > 0) {
           const contentType = reqObj.headers['content-type'] || 'application/json';
@@ -392,8 +374,8 @@ app.all(['/p/:siteId', '/p/:siteId/*'], async (req, res, next) => {
 // -----------------------------------------------------------------------------
 
 function dropletGlobalWaf(req, res, next) {
-  // Skip API routes and static asset routes
-  if (req.path.startsWith('/api/') || req.path.startsWith('/public/') || req.path.includes('.')) {
+  // Skip health check and static assets
+  if (req.path === '/healthz' || req.path === '/chart.umd.js' || req.path.startsWith('/public/')) {
     return next();
   }
 
@@ -401,20 +383,32 @@ function dropletGlobalWaf(req, res, next) {
   const userAgent = req.headers['user-agent'] || 'Unknown';
   const reqPath = req.originalUrl || req.path;
 
-  let violation = null;
-  if (KNOWN_BOT_USER_AGENTS.test(userAgent)) {
-    violation = { category: 'Bot', label: 'Known Malicious Scanner User-Agent' };
-  }
-  if (!violation) violation = scanValue(reqPath, WAF_RULES);
-  if (!violation && req.query) violation = scanValue(req.query, WAF_RULES);
-  if (!violation && req.body) violation = scanValue(req.body, WAF_RULES);
-
-  if (violation) {
+  // 1. Global Rate Limiting (DDoS: > 100 requests/min per IP on public/traffic routes)
+  if (!req.path.startsWith('/api/') && checkDDoS('global', clientIp)) {
     recordAttackLog({
       site_id: null,
       user_id: null,
       ip: clientIp,
-      type: violation.category,
+      type: 'DDoS',
+      path: reqPath,
+      method: req.method,
+      user_agent: userAgent,
+      status: 'BLOCKED'
+    });
+    return res.status(403).json({
+      ok: false,
+      error: 'Request rate limit exceeded (DDoS protection triggered)',
+      type: 'DDoS'
+    });
+  }
+
+  // 2. Check body size (Max 10KB)
+  if (getBodySize(req) > 10 * 1024) {
+    recordAttackLog({
+      site_id: null,
+      user_id: null,
+      ip: clientIp,
+      type: 'Oversized Body',
       path: reqPath,
       method: req.method,
       user_agent: userAgent,
@@ -423,8 +417,39 @@ function dropletGlobalWaf(req, res, next) {
     return res.status(403).json({
       ok: false,
       error: 'Request blocked by Droplet',
-      type: violation.category,
-      rule: violation.label
+      type: 'Oversized Body',
+      rule: 'Body size exceeds 10KB limit'
+    });
+  }
+
+  // 3. Inspect for Bot User-Agent
+  let violation = null;
+  const botRule = WAF_RULES.find(r => r.type === 'Bot');
+  if (botRule && botRule.regex.test(userAgent)) {
+    violation = botRule;
+  }
+
+  // 4. Inspect payload (URL, Query, Body) with WAF rules & evasion handling
+  if (!violation) violation = scanValue(reqPath, WAF_RULES, false);
+  if (!violation && req.query) violation = scanValue(req.query, WAF_RULES, true);
+  if (!violation && req.body) violation = scanValue(req.body, WAF_RULES, false);
+
+  if (violation) {
+    recordAttackLog({
+      site_id: null,
+      user_id: null,
+      ip: clientIp,
+      type: violation.type,
+      path: reqPath,
+      method: req.method,
+      user_agent: userAgent,
+      status: 'BLOCKED'
+    });
+    return res.status(403).json({
+      ok: false,
+      error: 'Request blocked by Droplet',
+      type: violation.type,
+      rule: violation.name
     });
   }
 
@@ -451,7 +476,7 @@ function requireAuth(req, res, next) {
     const user = getUserById(decoded.id);
 
     if (!user || user.active === 0) {
-      res.clearCookie('token');
+      res.clearCookie('token', CLEAR_COOKIE_OPTIONS);
       return res.status(401).json({ ok: false, error: 'User session expired or account disabled' });
     }
 
@@ -525,12 +550,7 @@ app.post('/api/register', authLimiter, (req, res) => {
       { expiresIn: '8h' }
     );
 
-    res.cookie('token', token, {
-      httpOnly: true,
-      sameSite: IS_PROD ? 'lax' : 'lax',
-      secure: IS_PROD,
-      maxAge: 8 * 60 * 60 * 1000
-    });
+    res.cookie('token', token, COOKIE_OPTIONS);
 
     return res.status(201).json({
       ok: true,
@@ -577,12 +597,7 @@ app.post('/api/login', authLimiter, (req, res) => {
       { expiresIn: '8h' }
     );
 
-    res.cookie('token', token, {
-      httpOnly: true,
-      sameSite: IS_PROD ? 'lax' : 'lax',
-      secure: IS_PROD,
-      maxAge: 8 * 60 * 60 * 1000
-    });
+    res.cookie('token', token, COOKIE_OPTIONS);
 
     return res.json({
       ok: true,
@@ -600,11 +615,7 @@ app.post('/api/login', authLimiter, (req, res) => {
 
 // POST /api/logout
 app.post('/api/logout', (req, res) => {
-  res.clearCookie('token', {
-    httpOnly: true,
-    sameSite: IS_PROD ? 'lax' : 'lax',
-    secure: IS_PROD
-  });
+  res.clearCookie('token', CLEAR_COOKIE_OPTIONS);
   return res.json({ ok: true, message: 'Logged out successfully' });
 });
 
@@ -778,10 +789,11 @@ app.get('/api/stats/timeseries', requireAuth, (req, res) => {
   return res.json({ ok: true, data: timeseries });
 });
 
-// GET /api/stats/types?site=
+// GET /api/stats/types?site=&range=
 app.get('/api/stats/types', requireAuth, (req, res) => {
   const isAdmin = req.user.role === 'admin';
   const siteId = req.query.site ? Number(req.query.site) : null;
+  const range = req.query.range || null;
 
   if (siteId && !isAdmin) {
     const site = getSiteById(siteId);
@@ -790,7 +802,7 @@ app.get('/api/stats/types', requireAuth, (req, res) => {
     }
   }
 
-  const typesData = getAttackTypesStats(req.user.id, isAdmin, siteId);
+  const typesData = getAttackTypesStats(req.user.id, isAdmin, siteId, range);
   return res.json({ ok: true, data: typesData });
 });
 
