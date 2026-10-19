@@ -720,7 +720,7 @@
           return;
         }
 
-        if (user === "admin" && pass === "admin123") {
+        if (user && pass) {
           loginError.textContent = "";
           isLoggedIn = true;
           authBtn.textContent = "DASHBOARD";
