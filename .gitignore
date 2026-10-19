@@ -1,0 +1,9 @@
+node_modules/
+node_modules
+.env
+*.db
+*.db-wal
+*.db-shm
+.npmrc
+.DS_Store
+Thumbs.db
